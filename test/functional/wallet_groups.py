@@ -22,6 +22,8 @@ class WalletGroupTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 5
+        # whitelist peers to speed up tx relay / mempool sync
+        self.noban_tx_relay = True
         # To make the upstream magic numbers for fees match, we have to
         # make sure the test is using segwit and bech32 addresses.
         args = ["-addresstype=bech32"]
@@ -34,7 +36,6 @@ class WalletGroupTest(BitcoinTestFramework):
         ]
 
         for args in self.extra_args:
-            args.append("-whitelist=noban@127.0.0.1")   # whitelist peers to speed up tx relay / mempool sync
             args.append(f"-paytxfee={20 * 1e3 / 1e8}")  # apply feerate of 20 sats/vB across all nodes
 
         self.rpc_timeout = 480
@@ -46,13 +47,6 @@ class WalletGroupTest(BitcoinTestFramework):
         self.log.info("Setting up")
         # Mine some coins.  Enable segwit.
         self.generate(self.nodes[0], 500)
-        # To take full use of immediate tx relay, all nodes need to be reachable
-        # via inbound peers, i.e. connect first to last to close the circle
-        # (the default test network topology looks like this:
-        #  node0 <-- node1 <-- node2 <-- node3 <-- node4 <-- node5)
-        self.connect_nodes(0, self.num_nodes - 1)
-        # Mine some coins
-        self.generate(self.nodes[0], COINBASE_MATURITY + 1)
 
         # Get some addresses from the two nodes
         addr1 = [self.nodes[1].getnewaddress() for _ in range(3)]
@@ -191,4 +185,4 @@ class WalletGroupTest(BitcoinTestFramework):
 
 
 if __name__ == '__main__':
-    WalletGroupTest().main()
+    WalletGroupTest(__file__).main()

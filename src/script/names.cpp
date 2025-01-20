@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2020 Daniel Kraft
+// Copyright (c) 2014-2023 Daniel Kraft
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -54,38 +54,50 @@ CNameScript::CNameScript (const CScript& script)
   address = CScript (pc, script.end ());
 }
 
-namespace
-{
-
-/**
- * Concats together a base address and name prefix script.
- */
 CScript
-AddNamePrefix (const CScript& addr, const CScript& prefix)
+CNameScript::GetPrefix () const
+{
+  switch (op)
+    {
+    case OP_NAME_REGISTER:
+      return CScript () << OP_NAME_REGISTER
+                        << getOpName () << getOpValue ()
+                        << OP_2DROP << OP_DROP;
+    case OP_NAME_UPDATE:
+      return CScript () << OP_NAME_UPDATE
+                        << getOpName () << getOpValue ()
+                        << OP_2DROP << OP_DROP;
+    default:
+      return CScript ();
+    }
+}
+
+CScript
+CNameScript::AddNamePrefix (const CScript& addr, const CScript& prefix)
 {
   CScript res = prefix;
   res.insert (res.end (), addr.begin (), addr.end ());
   return res;
 }
 
-} // anonymous namespace
-
 CScript
 CNameScript::buildNameRegister (const CScript& addr, const valtype& name,
                                 const valtype& value)
 {
-  CScript prefix;
-  prefix << OP_NAME_REGISTER << name << value << OP_2DROP << OP_DROP;
+  CNameScript op;
+  op.op = OP_NAME_REGISTER;
+  op.args = {name, value};
 
-  return AddNamePrefix (addr, prefix);
+  return AddNamePrefix (addr, op.GetPrefix ());
 }
 
 CScript
 CNameScript::buildNameUpdate (const CScript& addr, const valtype& name,
                               const valtype& value)
 {
-  CScript prefix;
-  prefix << OP_NAME_UPDATE << name << value << OP_2DROP << OP_DROP;
+  CNameScript op;
+  op.op = OP_NAME_UPDATE;
+  op.args = {name, value};
 
-  return AddNamePrefix (addr, prefix);
+  return AddNamePrefix (addr, op.GetPrefix ());
 }

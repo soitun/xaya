@@ -28,7 +28,7 @@ BOOST_AUTO_TEST_CASE( namespace_detection )
     const valtype gameValid = DecodeName ("g/wikileaks", NameEncoding::ASCII);
     BOOST_CHECK(NamespaceFromName(gameValid) == NameNamespace::Game);
 
-    const valtype utf8Valid = DecodeName (u8"p/äöü", NameEncoding::UTF8);
+    const valtype utf8Valid = DecodeName (reinterpret_cast<const char*> (u8"p/äöü"), NameEncoding::UTF8);
     BOOST_CHECK(NamespaceFromName(utf8Valid) == NameNamespace::Player);
 }
 
@@ -36,6 +36,28 @@ BOOST_AUTO_TEST_CASE( name_description )
 {
     const valtype playerValid = DecodeName ("p/wikileaks", NameEncoding::ASCII);
     BOOST_CHECK(DescFromName(playerValid, NameNamespace::Player) == "'p/wikileaks'");
+}
+
+BOOST_AUTO_TEST_CASE( valid_json )
+{
+    BOOST_CHECK_EQUAL(IsValidJSONOrEmptyString("{\"bar\": [1,2,3]}"), true);
+    
+    BOOST_CHECK_EQUAL(IsValidJSONOrEmptyString("{\foo:"), false);
+    
+    BOOST_CHECK_EQUAL(IsValidJSONOrEmptyString(""), true);
+}
+
+BOOST_AUTO_TEST_CASE( minimal_json )
+{
+    BOOST_CHECK_EQUAL(IsMinimalJSONOrEmptyString("{\"bar\":[1,2,3]}"), true);
+
+    BOOST_CHECK_EQUAL(IsMinimalJSONOrEmptyString("{\"bar\":  [1,2,3]}"), false);
+
+    BOOST_CHECK_EQUAL(IsMinimalJSONOrEmptyString("{\foo:"), false);
+
+    BOOST_CHECK_EQUAL(IsMinimalJSONOrEmptyString(""), true);
+
+    BOOST_CHECK_EQUAL(IsMinimalJSONOrEmptyString("{\"bar\":[1, 2, 3]}"), false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

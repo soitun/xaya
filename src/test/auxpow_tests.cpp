@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2021 Daniel Kraft
+// Copyright (c) 2014-2024 Daniel Kraft
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -193,13 +193,13 @@ CAuxpowBuilder::get (const CTransactionRef tx) const
   LOCK(cs_main);
 
   CAuxPowForTest res(tx);
-  res.vMerkleBranch = merkle_tests::BlockMerkleBranch (parentBlock, 0);
+  res.vMerkleBranch = TransactionMerklePath (parentBlock, 0);
 
   res.vChainMerkleBranch = auxpowChainMerkleBranch;
   res.nChainIndex = auxpowChainIndex;
   res.parentBlock = parentBlock;
 
-  return std::move (res);
+  return res;
 }
 
 valtype
@@ -396,7 +396,8 @@ public:
   getCurrentBlock (const PowAlgo algo, const CScript& scriptPubKey,
                    uint256& target)
   {
-    return AuxpowMiner::getCurrentBlock (*node.chainman, *node.mempool, algo,
+    return AuxpowMiner::getCurrentBlock (*node.chainman, *node.mining,
+                                         *node.mempool, algo,
                                          scriptPubKey, target);
   }
 
@@ -458,7 +459,7 @@ BOOST_FIXTURE_TEST_CASE (auxpow_miner_blockRegeneration, TestChain100Setup)
   mtx.vout.emplace_back (1234, scriptPubKey);
   {
     LOCK2 (cs_main, m_node.mempool->cs);
-    m_node.mempool->addUnchecked (entry.FromTx (mtx));
+    AddToMempool (*m_node.mempool, entry.FromTx (mtx));
   }
 
   /* We should still get back the cached block, for now.  */

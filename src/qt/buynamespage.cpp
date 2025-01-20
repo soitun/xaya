@@ -5,10 +5,12 @@
 #include <logging.h>
 #include <qt/configurenamedialog.h>
 #include <qt/guiutil.h>
+#include <qt/nametablemodel.h>
 #include <qt/platformstyle.h>
 #include <qt/walletmodel.h>
 #include <rpc/protocol.h>
 
+#include <names/encoding.h>
 #include <univalue.h>
 
 #include <QMessageBox>
@@ -107,10 +109,23 @@ void BuyNamesPage::onRegisterNameAction()
 QString BuyNamesPage::name_available(const QString &name) const
 {
     const std::string strName = name.toStdString();
-    LogPrint(BCLog::QT, "wallet attempting name_show: name=%s\n", strName);
+    LogDebug(BCLog::QT, "wallet attempting name_show: name=%s\n", strName);
 
     UniValue params(UniValue::VOBJ);
-    params.pushKV ("name", strName);
+
+    try
+    {
+        const QString hexName = NameTableModel::asciiToHex(name);
+        params.pushKV ("name", hexName.toStdString());
+    }
+    catch (const InvalidNameString& exc)
+    {
+        return tr ("Name was invalid ASCII.");
+    }
+
+    UniValue options(UniValue::VOBJ);
+    options.pushKV ("nameEncoding", "hex");
+    params.pushKV ("options", options);
 
     const std::string walletURI = "/wallet/" + walletModel->getWalletName().toStdString();
 
@@ -130,7 +145,7 @@ QString BuyNamesPage::name_available(const QString &name) const
 
         const UniValue message = e.find_value("message");
         const std::string errorStr = message.get_str();
-        LogPrint(BCLog::QT, "name_show error: %s\n", errorStr);
+        LogDebug(BCLog::QT, "name_show error: %s\n", errorStr);
         return QString::fromStdString(errorStr);
     }
 
@@ -140,22 +155,44 @@ QString BuyNamesPage::name_available(const QString &name) const
 QString BuyNamesPage::registerName(const QString &name, const std::optional<QString> &value, const std::optional<QString> &transferTo) const
 {
     const std::string strName = name.toStdString();
-    LogPrint(BCLog::QT, "wallet attempting name_register: name=%s\n", strName);
+    LogDebug(BCLog::QT, "wallet attempting name_register: name=%s\n", strName);
 
     UniValue params(UniValue::VOBJ);
-    params.pushKV ("name", strName);
+
+    try
+    {
+        const QString hexName = NameTableModel::asciiToHex(name);
+        params.pushKV ("name", hexName.toStdString());
+    }
+    catch (const InvalidNameString& exc)
+    {
+        return tr ("Name was invalid ASCII.");
+    }
+
+    UniValue options(UniValue::VOBJ);
+    options.pushKV ("nameEncoding", "hex");
 
     if (value)
     {
-        params.pushKV ("value", value.value().toStdString());
+        try
+        {
+            const QString hexValue = NameTableModel::asciiToHex(value.value());
+            params.pushKV ("value", hexValue.toStdString());
+        }
+        catch (const InvalidNameString& exc)
+        {
+            return tr ("Value was invalid ASCII.");
+        }
+
+        options.pushKV ("valueEncoding", "hex");
     }
 
     if (transferTo)
     {
-        UniValue options(UniValue::VOBJ);
         options.pushKV ("destAddress", transferTo.value().toStdString());
-        params.pushKV ("options", options);
     }
+
+    params.pushKV ("options", options);
 
     const std::string walletURI = "/wallet/" + walletModel->getWalletName().toStdString();
 
@@ -165,7 +202,7 @@ QString BuyNamesPage::registerName(const QString &name, const std::optional<QStr
     catch (const UniValue& e) {
         const UniValue message = e.find_value("message");
         const std::string errorStr = message.get_str();
-        LogPrint(BCLog::QT, "name_register error: %s\n", errorStr);
+        LogDebug(BCLog::QT, "name_register error: %s\n", errorStr);
         return QString::fromStdString(errorStr);
     }
     return tr ("");

@@ -8,6 +8,7 @@
 #include <qt/platformstyle.h>
 #include <qt/walletmodel.h>
 #include <wallet/wallet.h>
+#include <names/applications.h>
 
 #include <QMessageBox>
 #include <QClipboard>
@@ -51,6 +52,7 @@ void ConfigureNameDialog::accept()
         return;
 
     QString addr = ui->transferTo->text();
+    std::string data = ui->dataEdit->text().toStdString();
 
     if (addr != "" && !walletModel->validateAddress(addr))
     {
@@ -61,7 +63,46 @@ void ConfigureNameDialog::accept()
     returnData = ui->dataEdit->text();
     returnTransferTo = ui->transferTo->text();
 
-    QDialog::accept();
+    if(!IsValidJSONOrEmptyString(data)){
+        QMessageBox::StandardButton MessageBoxInvalidJSON = 
+        QMessageBox::warning(this, tr("Invalid JSON"),
+                tr("Are you sure you want to continue anyway? The inputted JSON data is invalid, and is likely to make the name unresolvable."), 
+                QMessageBox::Ok|QMessageBox::Cancel);
+
+        if(MessageBoxInvalidJSON == QMessageBox::Ok){
+            QDialog::accept();
+        }
+
+    } else if (!IsMinimalJSONOrEmptyString(data)) {
+        QMessageBox MessageBoxNonMinimalJSON;
+        MessageBoxNonMinimalJSON.setIcon(QMessageBox::Warning);
+        MessageBoxNonMinimalJSON.setWindowTitle(tr("Non-minimal JSON"));
+        MessageBoxNonMinimalJSON.setText(tr("Are you sure you want to continue anyway? The inputted JSON data is non-minimal, and therefore will waste space as well as incurring added transaction costs when written on the blockchain.")); 
+        MessageBoxNonMinimalJSON.addButton(QMessageBox::Ok);
+        MessageBoxNonMinimalJSON.addButton(QMessageBox::Cancel);
+        MessageBoxNonMinimalJSON.addButton(tr("Minimalise JSON"), QMessageBox::ActionRole);
+        
+        MessageBoxNonMinimalJSON.exec();
+
+        QMessageBox::ButtonRole reply = MessageBoxNonMinimalJSON.buttonRole(MessageBoxNonMinimalJSON.clickedButton());
+
+        if(reply == QMessageBox::AcceptRole){
+            QDialog::accept();
+        } else if(reply == QMessageBox::ActionRole){
+            
+            std::string minimalJSONData = GetMinimalJSON(data);
+            ui->dataEdit->setText(QString::fromStdString(minimalJSONData));
+
+            returnData = QString::fromStdString(minimalJSONData);
+            data = minimalJSONData;
+
+            QDialog::accept();
+        }
+
+    } else {
+        QDialog::accept();
+    }
+
 }
 
 void ConfigureNameDialog::setModel(WalletModel *walletModel)
@@ -98,4 +139,15 @@ void ConfigureNameDialog::onDataEdited(const QString &name)
 {
     ui->dataSize->setText(tr("%1 / %2").arg(name.size()).arg(MAX_VALUE_LENGTH));
     ui->dataSize->resize(ui->dataSize->fontMetrics().horizontalAdvance(ui->dataSize->text()), ui->dataSize->height());
+
+    std::string data = ui->dataEdit->text().toStdString();
+    
+    if(IsMinimalJSONOrEmptyString(data)){ 
+        ui->labelValidJSON->setText(tr("Valid and minimal JSON data."));
+    } else if(IsValidJSONOrEmptyString(data)){
+        ui->labelValidJSON->setText(tr("JSON data is not minimal."));
+    } else {
+        ui->labelValidJSON->setText(tr("JSON data inputted is invalid."));
+    }
 }
+

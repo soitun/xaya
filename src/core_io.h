@@ -10,6 +10,7 @@
 
 #include <string>
 #include <vector>
+#include <optional>
 
 class CBlock;
 class CBlockHeader;
@@ -40,24 +41,15 @@ std::string ScriptToAsmStr(const CScript& script, const bool fAttemptSighashDeco
 bool DecodeHexBlockHeader(CBlockHeader&, const std::string& hex_header);
 bool DecodeHexPureHeader(CPureBlockHeader&, const std::string& hex_header);
 
-/**
- * Parse a hex string into 256 bits
- * @param[in] strHex a hex-formatted, 64-character string
- * @param[out] result the result of the parsing
- * @returns true if successful, false if not
- *
- * @see ParseHashV for an RPC-oriented version of this
- */
-bool ParseHashStr(const std::string& strHex, uint256& result);
 [[nodiscard]] util::Result<int> SighashFromStr(const std::string& sighash);
 
 // core_write.cpp
 UniValue ValueFromAmount(const CAmount amount);
 std::string FormatScript(const CScript& script);
-std::string EncodeHexTx(const CTransaction& tx, const int serializeFlags = 0);
+std::string EncodeHexTx(const CTransaction& tx);
 std::string SighashToStr(unsigned char sighash_type);
 void ScriptToUniv(const CScript& script, UniValue& out, bool include_hex = true, bool include_address = false, const SigningProvider* provider = nullptr);
-void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex = true, int serialize_flags = 0, const CTxUndo* txundo = nullptr, TxVerbosity verbosity = TxVerbosity::SHOW_DETAILS);
+void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex = true, const CTxUndo* txundo = nullptr, TxVerbosity verbosity = TxVerbosity::SHOW_DETAILS);
 
 /**
  * Converts a name script to an UniValue representation suitable to show

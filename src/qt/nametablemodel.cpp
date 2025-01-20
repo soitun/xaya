@@ -4,6 +4,8 @@
 #include <qt/clientmodel.h>
 #include <qt/transactiontablemodel.h>
 #include <qt/walletmodel.h>
+
+#include <names/encoding.h>
 #include <univalue.h>
 #include <wallet/wallet.h>
 
@@ -68,21 +70,25 @@ public:
         std::map<std::string, NameTableEntry> vNamesO;
 
         // confirmed names (name_list)
-        // TODO: Set name and value encoding to hex, so that nonstandard
-        // encodings don't cause errors.
+
+        UniValue params(UniValue::VOBJ);
+        UniValue options(UniValue::VOBJ);
+        options.pushKV ("nameEncoding", "hex");
+        options.pushKV ("valueEncoding", "hex");
+        params.pushKV ("options", options);
 
         const std::string walletURI = "/wallet/" + parent.walletModel->getWalletName().toStdString();
 
         UniValue confirmedNames;
         try {
-            confirmedNames = parent.walletModel->node().executeRpc("name_list", NullUniValue, walletURI);
+            confirmedNames = parent.walletModel->node().executeRpc("name_list", params, walletURI);
         } catch (const UniValue& e) {
             // although we shouldn't typically encounter error here, we
             // should continue and try to add confirmed names and
             // pending names. show error to user in case something
             // actually went wrong so they can potentially recover
             const UniValue message = e.find_value( "message");
-            LogPrint(BCLog::QT, "name_list lookup error: %s\n", message.get_str());
+            LogDebug(BCLog::QT, "name_list lookup error: %s\n", message.get_str());
         }
 
         // will be an object if name_list command isn't available/other error
@@ -97,8 +103,24 @@ public:
                     continue;
                 }
 
-                const std::string name = maybeName.get_str();
-                const std::string data = maybeData.get_str();
+                // TODO: Properly handle non-ASCII names/data.
+
+                const std::string hexName = maybeName.get_str();
+                std::string name;
+
+                const std::string hexData = maybeData.get_str();
+                std::string data;
+
+                try
+                {
+                    name = NameTableModel::hexToAscii(QString::fromStdString(hexName)).toStdString();
+                    data = NameTableModel::hexToAscii(QString::fromStdString(hexData)).toStdString();
+                }
+                catch (const InvalidNameString& exc)
+                {
+                    continue;
+                }
+
                 const int height = v.find_value ( "height").getInt<int>();
 
                 const bool isMine = v.find_value ( "ismine").get_bool();
@@ -120,19 +142,17 @@ public:
         }
 
         // unconfirmed names (name_pending)
-        // TODO: Set name and value encoding to hex, so that nonstandard
-        // encodings don't cause errors.
 
         UniValue pendingNames;
         try {
-            pendingNames = parent.walletModel->node().executeRpc("name_pending", NullUniValue, walletURI);
+            pendingNames = parent.walletModel->node().executeRpc("name_pending", params, walletURI);
         } catch (const UniValue& e) {
             // although we shouldn't typically encounter error here, we
             // should continue and try to add confirmed names and
             // pending names. show error to user in case something
             // actually went wrong so they can potentially recover
             const UniValue message = e.find_value( "message");
-            LogPrint(BCLog::QT, "name_pending lookup error: %s\n", message.get_str());
+            LogDebug(BCLog::QT, "name_pending lookup error: %s\n", message.get_str());
         }
 
         // will be an object if name_pending command isn't available/other error
@@ -147,8 +167,23 @@ public:
                     continue;
                 }
 
-                const std::string name = maybeName.get_str();
-                const std::string data = maybeData.get_str();
+                // TODO: Properly handle non-ASCII names/data.
+
+                const std::string hexName = maybeName.get_str();
+                std::string name;
+
+                const std::string hexData = maybeData.get_str();
+                std::string data;
+
+                try
+                {
+                    name = NameTableModel::hexToAscii(QString::fromStdString(hexName)).toStdString();
+                    data = NameTableModel::hexToAscii(QString::fromStdString(hexData)).toStdString();
+                }
+                catch (const InvalidNameString& exc)
+                {
+                    continue;
+                }
 
                 const bool isMine = v.find_value ( "ismine").get_bool();
                 const std::string op = v.find_value ( "op").get_str();
@@ -469,25 +504,70 @@ NameTableModel::emitDataChanged(int idx)
     dataChanged(index(idx, 0), index(idx, columns.length()-1));
 }
 
+QString NameTableModel::asciiToHex(const QString &ascii)
+{
+    const std::string strAscii = ascii.toStdString();
+    const valtype vt = DecodeName (strAscii, NameEncoding::ASCII);
+
+    const std::string strHex = EncodeName (vt, NameEncoding::HEX);
+    const QString hex = QString::fromStdString(strHex);
+
+    return hex;
+}
+
+QString NameTableModel::hexToAscii(const QString &hex)
+{
+    const std::string strHex = hex.toStdString();
+    const valtype vt = DecodeName (strHex, NameEncoding::HEX);
+
+    const std::string strAscii = EncodeName (vt, NameEncoding::ASCII);
+    const QString ascii = QString::fromStdString(strAscii);
+
+    return ascii;
+}
+
 QString NameTableModel::update(const QString &name, const std::optional<QString> &value, const std::optional<QString> &transferTo) const
 {
-    const std::string strName = name.toStdString();
-    LogPrint(BCLog::QT, "wallet attempting name_update: name=%s\n", strName);
+    LogDebug(BCLog::QT, "wallet attempting name_update: name=%s\n", name.toStdString());
 
     UniValue params(UniValue::VOBJ);
-    params.pushKV ("name", strName);
+
+    // TODO: Properly handle non-ASCII names/data.
+
+    try
+    {
+        const QString hexName = NameTableModel::asciiToHex(name);
+        params.pushKV ("name", hexName.toStdString());
+    }
+    catch (const InvalidNameString& exc)
+    {
+        return tr ("Name was invalid ASCII.");
+    }
+
+    UniValue options(UniValue::VOBJ);
+    options.pushKV ("nameEncoding", "hex");
 
     if (value)
     {
-        params.pushKV ("value", value.value().toStdString());
+        try
+        {
+            const QString hexValue = NameTableModel::asciiToHex(value.value());
+            params.pushKV ("value", hexValue.toStdString());
+        }
+        catch (const InvalidNameString& exc)
+        {
+            return tr ("Value was invalid ASCII.");
+        }
+
+        options.pushKV ("valueEncoding", "hex");
     }
 
     if (transferTo)
     {
-        UniValue options(UniValue::VOBJ);
         options.pushKV ("destAddress", transferTo.value().toStdString());
-        params.pushKV ("options", options);
     }
+
+    params.pushKV ("options", options);
 
     const std::string walletURI = "/wallet/" + walletModel->getWalletName().toStdString();
 
@@ -497,7 +577,7 @@ QString NameTableModel::update(const QString &name, const std::optional<QString>
     catch (const UniValue& e) {
         const UniValue message = e.find_value("message");
         const std::string errorStr = message.get_str();
-        LogPrint(BCLog::QT, "name_update error: %s\n", errorStr);
+        LogDebug(BCLog::QT, "name_update error: %s\n", errorStr);
         return QString::fromStdString(errorStr);
     }
     return tr ("");

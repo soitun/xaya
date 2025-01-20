@@ -1,14 +1,15 @@
-// Copyright (c) 2014-2021 Daniel Kraft
+// Copyright (c) 2014-2024 Daniel Kraft
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef BITCOIN_RPC_NAMES_H
 #define BITCOIN_RPC_NAMES_H
 
-#include <script/script.h>
+#include <bitcoin-build-config.h>
 
 #include <names/encoding.h>
 #include <rpc/util.h>
+#include <script/script.h>
 #include <span.h>
 
 #include <string>
@@ -36,7 +37,7 @@ class CWallet;
 void addOwnershipInfo (const CScript& addr,
                        const wallet::CWallet* pwallet,
                        UniValue& data);
-#endif
+#endif // ENABLE_WALLET
 
 /**
  * Decodes a name given through the RPC interface and throws a

@@ -5,55 +5,32 @@
 
 #include <txdb.h>
 
-#include <chain.h>
+#include <coins.h>
+#include <dbwrapper.h>
 #include <logging.h>
 #include <names/encoding.h>
-#include <pow.h>
+#include <primitives/transaction.h>
 #include <random.h>
+#include <serialize.h>
 #include <script/names.h>
 #include <uint256.h>
-#include <util/signalinterrupt.h>
-#include <util/translation.h>
 #include <util/vector.h>
 #include <validation.h>
 
-#include <stdint.h>
+#include <cassert>
+#include <cstdlib>
+#include <iterator>
+#include <utility>
 
 static constexpr uint8_t DB_COIN{'C'};
-static constexpr uint8_t DB_BLOCK_FILES{'f'};
-static constexpr uint8_t DB_BLOCK_INDEX{'b'};
 
 static constexpr uint8_t DB_NAME{'n'};
 static constexpr uint8_t DB_NAME_HISTORY{'h'};
 
 static constexpr uint8_t DB_BEST_BLOCK{'B'};
 static constexpr uint8_t DB_HEAD_BLOCKS{'H'};
-static constexpr uint8_t DB_FLAG{'F'};
-static constexpr uint8_t DB_REINDEX_FLAG{'R'};
-static constexpr uint8_t DB_LAST_BLOCK{'l'};
-
 // Keys used in previous version that might still be found in the DB:
 static constexpr uint8_t DB_COINS{'c'};
-static constexpr uint8_t DB_TXINDEX_BLOCK{'T'};
-//               uint8_t DB_TXINDEX{'t'}
-
-util::Result<void> CheckLegacyTxindex(CBlockTreeDB& block_tree_db)
-{
-    CBlockLocator ignored{};
-    if (block_tree_db.Read(DB_TXINDEX_BLOCK, ignored)) {
-        return util::Error{_("The -txindex upgrade started by a previous version cannot be completed. Restart with the previous version or run a full -reindex.")};
-    }
-    bool txindex_legacy_flag{false};
-    block_tree_db.ReadFlag("txindex", txindex_legacy_flag);
-    if (txindex_legacy_flag) {
-        // Disable legacy txindex and warn once about occupied disk space
-        if (!block_tree_db.WriteFlag("txindex", false)) {
-            return util::Error{Untranslated("Failed to write block index db flag 'txindex'='0'")};
-        }
-        return util::Error{_("The block index db contains a legacy 'txindex'. To clear the occupied disk space, run a full -reindex, otherwise ignore this error. This error message will not be displayed again.")};
-    }
-    return {};
-}
 
 bool CCoinsViewDB::NeedsUpgrade()
 {
@@ -96,8 +73,10 @@ void CCoinsViewDB::ResizeCache(size_t new_cache_size)
     }
 }
 
-bool CCoinsViewDB::GetCoin(const COutPoint &outpoint, Coin &coin) const {
-    return m_db->Read(CoinEntry(&outpoint), coin);
+std::optional<Coin> CCoinsViewDB::GetCoin(const COutPoint& outpoint) const
+{
+    if (Coin coin; m_db->Read(CoinEntry(&outpoint), coin)) return coin;
+    return std::nullopt;
 }
 
 bool CCoinsViewDB::HaveCoin(const COutPoint &outpoint) const {
@@ -145,8 +124,8 @@ public:
     CDbNameIterator(const CDBWrapper& db);
 
     /* Implement iterator methods.  */
-    void seek (const valtype& start);
-    bool next (valtype& name, CNameData& data);
+    void seek (const valtype& start) override;
+    bool next (valtype& name, CNameData& data) override;
 
 };
 
@@ -169,8 +148,10 @@ bool CDbNameIterator::next(valtype& name, CNameData& data) {
         return false;
     name = key.second;
 
-    if (!iter->GetValue(data))
-        return error("%s : failed to read data from iterator", __func__);
+    if (!iter->GetValue(data)) {
+        LogError ("%s : failed to read data from iterator", __func__);
+        return false;
+    }
 
     iter->Next ();
     return true;
@@ -180,7 +161,7 @@ CNameIterator* CCoinsViewDB::IterateNames() const {
     return new CDbNameIterator(*m_db);
 }
 
-bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, const CNameCache &names, bool erase) {
+bool CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256 &hashBlock, const CNameCache& names) {
     CDBBatch batch(*m_db);
     size_t count = 0;
     size_t changed = 0;
@@ -191,6 +172,9 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, con
         // We may be in the middle of replaying.
         std::vector<uint256> old_heads = GetHeadBlocks();
         if (old_heads.size() == 2) {
+            if (old_heads[0] != hashBlock) {
+                LogPrintLevel(BCLog::COINDB, BCLog::Level::Error, "The coins database detected an inconsistent state, likely due to a previous crash or shutdown. You will need to restart bitcoind with the -reindex-chainstate or -reindex configuration option.\n");
+            }
             assert(old_heads[0] == hashBlock);
             old_tip = old_heads[1];
         }
@@ -203,8 +187,8 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, con
     batch.Erase(DB_BEST_BLOCK);
     batch.Write(DB_HEAD_BLOCKS, Vector(hashBlock, old_tip));
 
-    for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end();) {
-        if (it->second.flags & CCoinsCacheEntry::DIRTY) {
+    for (auto it{cursor.Begin()}; it != cursor.End();) {
+        if (it->second.IsDirty()) {
             CoinEntry entry(&it->first);
             if (it->second.coin.IsSpent())
                 batch.Erase(entry);
@@ -213,9 +197,9 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, con
             changed++;
         }
         count++;
-        it = erase ? mapCoins.erase(it) : std::next(it);
+        it = cursor.NextAndMaybeErase(*it);
         if (batch.SizeEstimate() > m_options.batch_write_bytes) {
-            LogPrint(BCLog::COINDB, "Writing partial batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
+            LogDebug(BCLog::COINDB, "Writing partial batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
             m_db->WriteBatch(batch);
             batch.Clear();
             if (m_options.simulate_crash_ratio) {
@@ -234,34 +218,15 @@ bool CCoinsViewDB::BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, con
     batch.Erase(DB_HEAD_BLOCKS);
     batch.Write(DB_BEST_BLOCK, hashBlock);
 
-    LogPrint(BCLog::COINDB, "Writing final batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
+    LogDebug(BCLog::COINDB, "Writing final batch of %.2f MiB\n", batch.SizeEstimate() * (1.0 / 1048576.0));
     bool ret = m_db->WriteBatch(batch);
-    LogPrint(BCLog::COINDB, "Committed %u changed transaction outputs (out of %u) to coin database...\n", (unsigned int)changed, (unsigned int)count);
+    LogDebug(BCLog::COINDB, "Committed %u changed transaction outputs (out of %u) to coin database...\n", (unsigned int)changed, (unsigned int)count);
     return ret;
 }
 
 size_t CCoinsViewDB::EstimateSize() const
 {
     return m_db->EstimateSize(DB_COIN, uint8_t(DB_COIN + 1));
-}
-
-bool CBlockTreeDB::ReadBlockFileInfo(int nFile, CBlockFileInfo &info) {
-    return Read(std::make_pair(DB_BLOCK_FILES, nFile), info);
-}
-
-bool CBlockTreeDB::WriteReindexing(bool fReindexing) {
-    if (fReindexing)
-        return Write(DB_REINDEX_FLAG, uint8_t{'1'});
-    else
-        return Erase(DB_REINDEX_FLAG);
-}
-
-void CBlockTreeDB::ReadReindexing(bool &fReindexing) {
-    fReindexing = Exists(DB_REINDEX_FLAG);
-}
-
-bool CBlockTreeDB::ReadLastBlockFile(int &nFile) {
-    return Read(DB_LAST_BLOCK, nFile);
 }
 
 /** Specialization of CCoinsViewCursor to iterate over a CCoinsViewDB */
@@ -337,18 +302,6 @@ void CCoinsViewDBCursor::Next()
     }
 }
 
-bool CBlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*> >& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo) {
-    CDBBatch batch(*this);
-    for (std::vector<std::pair<int, const CBlockFileInfo*> >::const_iterator it=fileInfo.begin(); it != fileInfo.end(); it++) {
-        batch.Write(std::make_pair(DB_BLOCK_FILES, it->first), *it->second);
-    }
-    batch.Write(DB_LAST_BLOCK, nLastFile);
-    for (std::vector<const CBlockIndex*>::const_iterator it=blockinfo.begin(); it != blockinfo.end(); it++) {
-        batch.Write(std::make_pair(DB_BLOCK_INDEX, (*it)->GetBlockHash()), CDiskBlockIndex(*it));
-    }
-    return WriteBatch(batch, true);
-}
-
 bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::function<void()>& interruption_point) const
 {
     /* It seems that there are no "const iterators" for LevelDB.  Since we
@@ -377,8 +330,10 @@ bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::funct
         case DB_COIN:
         {
             Coin coin;
-            if (!pcursor->GetValue(coin))
-                return error("%s : failed to read coin", __func__);
+            if (!pcursor->GetValue(coin)) {
+                LogError ("%s : failed to read coin", __func__);
+                return false;
+            }
 
             if (!coin.out.IsNull())
             {
@@ -386,9 +341,11 @@ bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::funct
                 if (nameOp.isNameOp() && nameOp.isAnyUpdate())
                 {
                     const valtype& name = nameOp.getOpName();
-                    if (namesInUTXO.count(name) > 0)
-                        return error("%s : name %s duplicated in UTXO set",
-                                     __func__, EncodeNameForMessage(name));
+                    if (namesInUTXO.count(name) > 0) {
+                        LogError ("%s : name %s duplicated in UTXO set",
+                                  __func__, EncodeNameForMessage(name));
+                        return false;
+                    }
                     namesInUTXO.insert(nameOp.getOpName());
                 }
             }
@@ -398,13 +355,17 @@ bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::funct
         case DB_NAME:
         {
             std::pair<uint8_t, valtype> key;
-            if (!pcursor->GetKey(key) || key.first != DB_NAME)
-                return error("%s : failed to read DB_NAME key", __func__);
+            if (!pcursor->GetKey(key) || key.first != DB_NAME) {
+                LogError ("%s : failed to read DB_NAME key", __func__);
+                return false;
+            }
             const valtype& name = key.second;
 
             CNameData data;
-            if (!pcursor->GetValue(data))
-                return error("%s : failed to read name value", __func__);
+            if (!pcursor->GetValue(data)) {
+                LogError ("%s : failed to read name value", __func__);
+                return false;
+            }
 
             assert(namesInDB.count(name) == 0);
             namesInDB.insert(name);
@@ -414,14 +375,17 @@ bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::funct
         case DB_NAME_HISTORY:
         {
             std::pair<uint8_t, valtype> key;
-            if (!pcursor->GetKey(key) || key.first != DB_NAME_HISTORY)
-                return error("%s : failed to read DB_NAME_HISTORY key",
-                             __func__);
+            if (!pcursor->GetKey(key) || key.first != DB_NAME_HISTORY) {
+                LogError ("%s : failed to read DB_NAME_HISTORY key", __func__);
+                return false;
+            }
             const valtype& name = key.second;
 
-            if (namesWithHistory.count(name) > 0)
-                return error("%s : name %s has duplicate history",
-                             __func__, EncodeNameForMessage(name));
+            if (namesWithHistory.count(name) > 0) {
+                LogError ("%s : name %s has duplicate history",
+                          __func__, EncodeNameForMessage(name));
+                return false;
+            }
             namesWithHistory.insert(name);
             break;
         }
@@ -434,23 +398,31 @@ bool CCoinsViewDB::ValidateNameDB(const Chainstate& chainState, const std::funct
     /* Now verify the collected data.  */
 
     for (const auto& name : namesInDB)
-        if (namesInUTXO.count(name) == 0)
-            return error("%s : name '%s' in DB but not UTXO set",
-                         __func__, EncodeNameForMessage(name));
+        if (namesInUTXO.count(name) == 0) {
+            LogError ("%s : name '%s' in DB but not UTXO set",
+                      __func__, EncodeNameForMessage(name));
+            return false;
+        }
     for (const auto& name : namesInUTXO)
-        if (namesInDB.count(name) == 0)
-            return error("%s : name '%s' in UTXO set but not DB",
-                         __func__, EncodeNameForMessage(name));
+        if (namesInDB.count(name) == 0) {
+            LogError ("%s : name '%s' in UTXO set but not DB",
+                      __func__, EncodeNameForMessage(name));
+            return false;
+        }
 
     if (fNameHistory)
     {
         for (const auto& name : namesWithHistory)
-            if (namesInDB.count(name) == 0)
-                return error("%s : history entry for name '%s' not in main DB",
-                             __func__, EncodeNameForMessage(name));
-    } else if (!namesWithHistory.empty ())
-        return error("%s : name_history entries in DB, but"
-                     " -namehistory not set", __func__);
+            if (namesInDB.count(name) == 0) {
+                LogError ("%s : history entry for name '%s' not in main DB",
+                          __func__, EncodeNameForMessage(name));
+                return false;
+            }
+    } else if (!namesWithHistory.empty ()) {
+        LogError ("%s : name_history entries in DB, but"
+                  " -namehistory not set", __func__);
+        return false;
+    }
 
     LogPrintf("Checked name database, %u names.\n", namesInDB.size());
     LogPrintf("Names with history: %u\n", namesWithHistory.size());
@@ -476,62 +448,4 @@ CNameCache::writeBatch (CDBBatch& batch) const
       batch.Erase (std::make_pair (DB_NAME_HISTORY, i->first));
     else
       batch.Write (std::make_pair (DB_NAME_HISTORY, i->first), i->second);
-}
-
-bool CBlockTreeDB::WriteFlag(const std::string &name, bool fValue) {
-    return Write(std::make_pair(DB_FLAG, name), fValue ? uint8_t{'1'} : uint8_t{'0'});
-}
-
-bool CBlockTreeDB::ReadFlag(const std::string &name, bool &fValue) {
-    uint8_t ch;
-    if (!Read(std::make_pair(DB_FLAG, name), ch))
-        return false;
-    fValue = ch == uint8_t{'1'};
-    return true;
-}
-
-bool CBlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
-{
-    AssertLockHeld(::cs_main);
-    std::unique_ptr<CDBIterator> pcursor(NewIterator());
-    pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
-
-    // Load m_block_index
-    while (pcursor->Valid()) {
-        if (interrupt) return false;
-        std::pair<uint8_t, uint256> key;
-        if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
-            CDiskBlockIndex diskindex;
-            if (pcursor->GetValue(diskindex)) {
-                // Construct block index object
-                CBlockIndex* pindexNew = insertBlockIndex(diskindex.ConstructBlockHash());
-                pindexNew->pprev          = insertBlockIndex(diskindex.hashPrev);
-                pindexNew->nHeight        = diskindex.nHeight;
-                pindexNew->nFile          = diskindex.nFile;
-                pindexNew->nDataPos       = diskindex.nDataPos;
-                pindexNew->nUndoPos       = diskindex.nUndoPos;
-                pindexNew->nVersion       = diskindex.nVersion;
-                pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-                pindexNew->nTime          = diskindex.nTime;
-                pindexNew->nBits          = diskindex.nBits;
-                pindexNew->nNonce         = diskindex.nNonce;
-                pindexNew->nStatus        = diskindex.nStatus;
-                pindexNew->algo           = diskindex.algo;
-                pindexNew->nTx            = diskindex.nTx;
-
-                /* Bitcoin checks the PoW here.  We don't do this because
-                   the CDiskBlockIndex does not contain the auxpow.
-                   This check isn't important, since the data on disk should
-                   already be valid and can be trusted.  */
-
-                pcursor->Next();
-            } else {
-                return error("%s: failed to read value", __func__);
-            }
-        } else {
-            break;
-        }
-    }
-
-    return true;
 }

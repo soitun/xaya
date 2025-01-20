@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2017 Daniel Kraft
+// Copyright (c) 2014-2023 Daniel Kraft
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -163,6 +163,17 @@ public:
     const CNameScript op(script);
     return op.isNameOp ();
   }
+
+  /**
+   * Returns just the name script prefix that this operation represents
+   * (without the base address).
+   */
+  CScript GetPrefix () const;
+
+  /**
+   * Concats together a base address and name prefix script.
+   */
+  static CScript AddNamePrefix (const CScript& addr, const CScript& prefix);
 
   /**
    * Build a NAME_REGISTER transaction.

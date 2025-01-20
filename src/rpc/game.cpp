@@ -1,8 +1,10 @@
-// Copyright (c) 2018-2023 The Xaya developers
+// Copyright (c) 2018-2024 The Xaya developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <rpc/game.h>
+
+#include <bitcoin-build-config.h>
 
 #include <chain.h>
 #include <chainparams.h>
@@ -113,7 +115,7 @@ SendUpdatesOneBlock (const std::set<std::string>& trackedGames,
   CBlock blk;
   if (!blockman.ReadBlockFromDisk (blk, *pindex))
     {
-      LogPrint (BCLog::GAME, "Reading block %s failed, ignoring\n",
+      LogDebug (BCLog::GAME, "Reading block %s failed, ignoring\n",
                 pindex->GetBlockHash ().GetHex ());
       return;
     }
@@ -138,14 +140,14 @@ SendUpdatesWorker::run (SendUpdatesWorker& self)
 
         if (self.work.empty ())
           {
-            LogPrint (BCLog::GAME,
+            LogDebug (BCLog::GAME,
                       "SendUpdatesWorker queue empty, interrupted = %d\n",
                       self.interrupted);
 
             if (self.interrupted)
               break;
 
-            LogPrint (BCLog::GAME,
+            LogDebug (BCLog::GAME,
                       "Waiting for sendupdates condition variable...\n");
             self.cvWork.wait (lock);
             continue;
@@ -154,7 +156,7 @@ SendUpdatesWorker::run (SendUpdatesWorker& self)
         w = std::move (self.work.front ());
         self.work.pop ();
 
-        LogPrint (BCLog::GAME, "Popped for sendupdates processing: %s\n",
+        LogDebug (BCLog::GAME, "Popped for sendupdates processing: %s\n",
                   w.str ().c_str ());
       }
 
@@ -166,7 +168,7 @@ SendUpdatesWorker::run (SendUpdatesWorker& self)
         SendUpdatesOneBlock (w.trackedGames,
                              ZMQGameBlocksNotifier::PREFIX_ATTACH,
                              w.reqtoken, pindex, self.blockman);
-      LogPrint (BCLog::GAME, "Finished processing sendupdates: %s\n",
+      LogDebug (BCLog::GAME, "Finished processing sendupdates: %s\n",
                 w.str ().c_str ());
     }
 #endif // ENABLE_ZMQ
@@ -187,12 +189,12 @@ SendUpdatesWorker::enqueue (Work&& w)
 
   if (interrupted)
     {
-      LogPrint (BCLog::GAME, "Not enqueueing work because interrupted: %s\n",
+      LogDebug (BCLog::GAME, "Not enqueueing work because interrupted: %s\n",
                 w.str ().c_str ());
       return;
     }
 
-  LogPrint (BCLog::GAME, "Enqueueing for sendupdates: %s\n", w.str ().c_str ());
+  LogDebug (BCLog::GAME, "Enqueueing for sendupdates: %s\n", w.str ().c_str ());
   work.push (std::move (w));
   cvWork.notify_all ();
 }
@@ -309,13 +311,13 @@ game_sendupdates ()
     {
       /* If the limit is set to a non-positive number, we do not enforce any
          to make sure things cannot be completely broken.  */
-      LogPrint (BCLog::GAME,
+      LogDebug (BCLog::GAME,
                 "-maxgameblockattaches set to %d, disabling limit\n",
                 maxAttaches);
     }
   else if (w.attach.size () > static_cast<unsigned> (maxAttaches))
     {
-      LogPrint (BCLog::GAME, "%d attach steps requested, limiting to %d\n",
+      LogDebug (BCLog::GAME, "%d attach steps requested, limiting to %d\n",
                 w.attach.size (), maxAttaches);
       w.attach.resize (maxAttaches);
       toBlock = w.attach.back ()->GetBlockHash ();

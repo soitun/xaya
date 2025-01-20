@@ -97,7 +97,7 @@ BOOST_AUTO_TEST_CASE(CheckProofOfWork_test_negative_target)
     uint256 hash;
     unsigned int nBits;
     nBits = UintToArith256(consensus.powLimit).GetCompact(true);
-    hash.SetHex("0x1");
+    hash = uint256{1};
     BOOST_CHECK(!CheckProofOfWork(hash, nBits, consensus));
 }
 
@@ -106,7 +106,7 @@ BOOST_AUTO_TEST_CASE(CheckProofOfWork_test_overflow_target)
     const auto& consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
     uint256 hash;
     unsigned int nBits{~0x00800000U};
-    hash.SetHex("0x1");
+    hash = uint256{1};
     BOOST_CHECK(!CheckProofOfWork(hash, nBits, consensus));
 }
 
@@ -118,7 +118,7 @@ BOOST_AUTO_TEST_CASE(CheckProofOfWork_test_too_easy_target)
     arith_uint256 nBits_arith = UintToArith256(consensus.powLimit);
     nBits_arith *= 2;
     nBits = nBits_arith.GetCompact();
-    hash.SetHex("0x1");
+    hash = uint256{1};
     BOOST_CHECK(!CheckProofOfWork(hash, nBits, consensus));
 }
 
@@ -163,9 +163,9 @@ BOOST_AUTO_TEST_CASE(GetBlockProofEquivalentTime_test)
     }
 
     for (int j = 0; j < 1000; j++) {
-        CBlockIndex *p1 = &blocks[InsecureRandRange(10000)];
-        CBlockIndex *p2 = &blocks[InsecureRandRange(10000)];
-        CBlockIndex *p3 = &blocks[InsecureRandRange(10000)];
+        CBlockIndex *p1 = &blocks[m_rng.randrange(10000)];
+        CBlockIndex *p2 = &blocks[m_rng.randrange(10000)];
+        CBlockIndex *p3 = &blocks[m_rng.randrange(10000)];
 
         const int64_t wdiff = GetBlockProofEquivalentTime(*p1, *p2, *p3, chainParams->GetConsensus());
         const int64_t tdiff = p1->GetBlockTime() - p2->GetBlockTime();
@@ -207,6 +207,13 @@ BOOST_AUTO_TEST_CASE(ChainParams_TESTNET_sanity)
 {
     sanity_check_chainparams(*m_node.args, ChainType::TESTNET);
 }
+
+/*
+BOOST_AUTO_TEST_CASE(ChainParams_TESTNET4_sanity)
+{
+    sanity_check_chainparams(*m_node.args, ChainType::TESTNET4);
+}
+*/
 
 BOOST_AUTO_TEST_CASE(ChainParams_SIGNET_sanity)
 {

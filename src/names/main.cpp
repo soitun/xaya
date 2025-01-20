@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2023 Daniel Kraft
+// Copyright (c) 2014-2024 Daniel Kraft
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -149,13 +149,13 @@ CheckNameTransaction (const CTransaction& tx, unsigned nHeight,
   for (unsigned i = 0; i < tx.vin.size (); ++i)
     {
       const COutPoint& prevout = tx.vin[i].prevout;
-      Coin coin;
-      if (!view.GetCoin (prevout, coin))
+      const auto coin = view.GetCoin (prevout);
+      if (!coin)
         return state.Invalid (TxValidationResult::TX_MISSING_INPUTS,
                               "bad-txns-inputs-missingorspent",
                               "Failed to fetch name input coin");
 
-      const CNameScript op(coin.out.scriptPubKey);
+      const CNameScript op(coin->out.scriptPubKey);
       if (op.isNameOp ())
         {
           if (nameIn != -1)
@@ -164,7 +164,7 @@ CheckNameTransaction (const CTransaction& tx, unsigned nHeight,
                                   "Multiple name inputs");
           nameIn = i;
           nameOpIn = op;
-          coinIn = coin;
+          coinIn = *coin;
         }
     }
 
@@ -221,12 +221,12 @@ CheckNameTransaction (const CTransaction& tx, unsigned nHeight,
 
   if (!IsNameValid (name, state))
     {
-      error ("%s: Name is invalid: %s", __func__, state.ToString ());
+      LogError ("%s: Name is invalid: %s", __func__, state.ToString ());
       return false;
     }
   if (!IsValueValid (nameOpOut.getOpValue (), state))
     {
-      error ("%s: Value is invalid: %s", __func__, state.ToString ());
+      LogError ("%s: Value is invalid: %s", __func__, state.ToString ());
       return false;
     }
 
@@ -294,7 +294,7 @@ ApplyNameTransaction (const CTransaction& tx, unsigned nHeight,
       if (op.isNameOp () && op.isAnyUpdate ())
         {
           const valtype& name = op.getOpName ();
-          LogPrint (BCLog::NAMES, "Updating name at height %d: %s\n",
+          LogDebug (BCLog::NAMES, "Updating name at height %d: %s\n",
                     nHeight, EncodeNameForMessage (name));
 
           CNameTxUndo opUndo;

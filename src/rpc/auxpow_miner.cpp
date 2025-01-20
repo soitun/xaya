@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2022 Daniel Kraft
+// Copyright (c) 2018-2024 Daniel Kraft
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -25,7 +25,7 @@
 namespace
 {
 
-using node::BlockAssembler;
+using interfaces::Mining;
 
 void auxMiningCheck(const node::NodeContext& node)
 {
@@ -37,8 +37,7 @@ void auxMiningCheck(const node::NodeContext& node)
     throw JSONRPCError (RPC_CLIENT_NOT_CONNECTED,
                         "Xaya is not connected!");
 
-  if (chainman.ActiveChainstate ().IsInitialBlockDownload ()
-        && !Params ().MineBlocksOnDemand ())
+  if (chainman.IsInitialBlockDownload () && !Params ().MineBlocksOnDemand ())
     throw JSONRPCError (RPC_CLIENT_IN_INITIAL_DOWNLOAD,
                         "Xaya is downloading blocks...");
 }
@@ -46,7 +45,7 @@ void auxMiningCheck(const node::NodeContext& node)
 }  // anonymous namespace
 
 const CBlock*
-AuxpowMiner::getCurrentBlock (const ChainstateManager& chainman,
+AuxpowMiner::getCurrentBlock (ChainstateManager& chainman, Mining& miner,
                               const CTxMemPool& mempool,
                               const PowAlgo algo,
                               const CScript& scriptPubKey, uint256& target)
@@ -70,16 +69,19 @@ AuxpowMiner::getCurrentBlock (const ChainstateManager& chainman,
           {
             /* Clear old blocks since they're obsolete now.  */
             blocks.clear ();
-            templates.clear ();
+            mapBlocks.clear ();
             curBlocks.clear ();
           }
 
         /* Create new block with nonce = 0 and extraNonce = 1.  */
-        std::unique_ptr<node::CBlockTemplate> newBlock
-            = BlockAssembler (chainman.ActiveChainstate (), &mempool)
-                .CreateNewBlock (algo, scriptPubKey);
-        if (newBlock == nullptr)
+        node::BlockCreateOptions opt;
+        opt.coinbase_output_script = scriptPubKey;
+        std::unique_ptr<interfaces::BlockTemplate> newTemplate
+            = miner.createNewBlock (algo, opt);
+        if (newTemplate == nullptr)
           throw JSONRPCError (RPC_OUT_OF_MEMORY, "out of memory");
+        blocks.push_back (std::make_unique<CBlock> (newTemplate->getBlock ()));
+        CBlock& newBlock = *blocks.back ();
 
         /* Update state only when CreateNewBlock succeeded.  */
         txUpdatedLast = mempool.GetTransactionsUpdated ();
@@ -87,13 +89,12 @@ AuxpowMiner::getCurrentBlock (const ChainstateManager& chainman,
         startTime = GetTime ();
 
         /* Finalise it by building the merkle root.  */
-        newBlock->block.hashMerkleRoot = BlockMerkleRoot (newBlock->block);
+        newBlock.hashMerkleRoot = BlockMerkleRoot (newBlock);
 
         /* Save in our map of constructed blocks.  */
-        pblockCur = &newBlock->block;
-        curBlocks.emplace (std::make_pair (algo, scriptID), pblockCur);
-        blocks[pblockCur->GetHash ()] = pblockCur;
-        templates.push_back (std::move (newBlock));
+        pblockCur = &newBlock;
+        curBlocks.emplace(std::make_pair (algo, scriptID), pblockCur);
+        mapBlocks[pblockCur->GetHash ()] = pblockCur;
       }
   }
 
@@ -119,11 +120,12 @@ AuxpowMiner::lookupSavedBlock (const std::string& hashHex) const
 {
   AssertLockHeld (cs);
 
-  uint256 hash;
-  hash.SetHex (hashHex);
+  const auto hash = uint256::FromHex (hashHex);
+  if (!hash)
+    throw JSONRPCError (RPC_INVALID_PARAMETER, "invalid block hash hex");
 
-  const auto iter = blocks.find (hash);
-  if (iter == blocks.end ())
+  const auto iter = mapBlocks.find (*hash);
+  if (iter == mapBlocks.end ())
     throw JSONRPCError (RPC_INVALID_PARAMETER, "block hash unknown");
 
   return iter->second;
@@ -138,10 +140,11 @@ AuxpowMiner::createAuxBlock (const JSONRPCRequest& request,
   const auto& node = EnsureAnyNodeContext (request);
   auxMiningCheck (node);
   const auto& mempool = EnsureMemPool (node);
-  const auto& chainman = EnsureChainman (node);
+  auto& chainman = EnsureChainman (node);
+  auto& mining = EnsureMining (node);
 
   uint256 target;
-  const CBlock* pblock = getCurrentBlock (chainman, mempool,
+  const CBlock* pblock = getCurrentBlock (chainman, mining, mempool,
                                           PowAlgo::SHA256D,
                                           scriptPubKey, target);
 
@@ -188,12 +191,13 @@ AuxpowMiner::createWork (const JSONRPCRequest& request,
   auto& node = EnsureAnyNodeContext (request);
   auxMiningCheck (node);
   auto& chainman = EnsureChainman (node);
+  auto& mining = EnsureMining (node);
   LOCK (cs);
 
   const auto& mempool = EnsureMemPool (node);
 
   uint256 target;
-  const CBlock* pblock = getCurrentBlock (chainman, mempool,
+  const CBlock* pblock = getCurrentBlock (chainman, mining, mempool,
                                           PowAlgo::NEOSCRYPT,
                                           scriptPubKey, target);
 
@@ -205,7 +209,7 @@ AuxpowMiner::createWork (const JSONRPCRequest& request,
      fake header of the PoW data.  Then perform the byte-order swapping and
      add zero-padding up to 128 bytes.  */
   std::vector<unsigned char> data;
-  CVectorWriter writer(SER_GETHASH, PROTOCOL_VERSION, data, 0);
+  VectorWriter writer(data, 0);
   writer << fakeHeader;
   const size_t len = data.size ();
   data.resize (128, 0);
@@ -243,15 +247,14 @@ AuxpowMiner::submitAuxBlock (const JSONRPCRequest& request,
   }
 
   const std::vector<unsigned char> vchAuxPow = ParseHex (auxpowHex);
-  CDataStream ss(vchAuxPow, SER_GETHASH, PROTOCOL_VERSION);
+  DataStream ss(vchAuxPow);
   std::unique_ptr<CAuxPow> pow(new CAuxPow ());
   ss >> *pow;
 
   shared_block->pow.setAuxpow (std::move (pow));
   assert (shared_block->GetHash ().GetHex () == hashHex);
 
-  return chainman.ProcessNewBlock (shared_block, /*force_processing=*/true,
-                                   /*min_pow_checked=*/true, nullptr);
+  return chainman.ProcessNewBlock (shared_block, true, true, nullptr);
 }
 
 bool
@@ -269,7 +272,7 @@ AuxpowMiner::submitWork (const JSONRPCRequest& request,
   vchData.resize (80);
   SwapGetWorkEndianness (vchData);
 
-  CDataStream ss(vchData, SER_GETHASH, PROTOCOL_VERSION);
+  DataStream ss(vchData);
   std::unique_ptr<CPureBlockHeader> fakeHeader(new CPureBlockHeader ());
   ss >> *fakeHeader;
 
